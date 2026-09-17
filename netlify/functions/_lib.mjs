@@ -2,7 +2,7 @@ import { getStore } from "@netlify/blobs";
 
 export const SG_ORIGIN = "https://www.steamgifts.com";
 export const CACHE_KEY = "live-snapshot-v1";
-export const MAX_PAGES = Number(process.env.SG_MAX_PAGES || 4);
+export const MAX_PAGES = Math.max(1, Math.min(10, Number(process.env.SG_MAX_PAGES || 4)));
 
 export function json(data, status = 200, extra = {}) {
   return {
@@ -75,19 +75,64 @@ export function enrich(g, now) {
 }
 
 export async function fetchPage(page) {
-  const url = `${SG_ORIGIN}/?format=json&page=${page}`;
-  const res = await fetch(url, {
-    headers: {
-      "accept": "application/json",
-      "user-agent": "GiveFlpps/1.0 (+https://giveflpps.netlify.app)"
-    }
-  });
-  if (!res.ok) throw new Error(`SteamGifts returned ${res.status} on page ${page}`);
-  const data = await res.json();
-  const list = Array.isArray(data) ? data : (data.giveaways || data.results || []);
-  return { list, perPage: Number(data.per_page || list.length || 0), page: Number(data.page || page) };
-}
+  // SteamGifts documents the JSON search endpoint and returns page/per_page metadata.
+  // We prefer the search feed because it is explicitly a giveaway listing endpoint,
+  // then fall back to the homepage JSON feed for compatibility.
+  const urls = [
+    `${SG_ORIGIN}/giveaways/search?format=json&page=${page}`,
+    `${SG_ORIGIN}/?format=json&page=${page}`
+  ];
+  let lastError = null;
 
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "accept": "application/json,text/plain,*/*",
+          "user-agent": "Mozilla/5.0 (compatible; GiveFlpps/1.1; +https://giveflpps.netlify.app)",
+          "accept-language": "en-US,en;q=0.9"
+        },
+        redirect: "follow"
+      });
+
+      const contentType = res.headers.get("content-type") || "";
+      const text = await res.text();
+      if (!res.ok) {
+        lastError = new Error(`SteamGifts returned HTTP ${res.status} for ${url}`);
+        continue;
+      }
+      if (!contentType.includes("json")) {
+        lastError = new Error(`SteamGifts returned non-JSON (${contentType || "unknown content-type"}) for ${url}`);
+        continue;
+      }
+
+      let data;
+      try { data = JSON.parse(text); }
+      catch { lastError = new Error(`SteamGifts returned invalid JSON for ${url}`); continue; }
+
+      const list = Array.isArray(data)
+        ? data
+        : (data.giveaways || data.results || data.data || []);
+
+      if (!Array.isArray(list)) {
+        lastError = new Error(`Unexpected SteamGifts JSON shape for ${url}`);
+        continue;
+      }
+
+      return {
+        list,
+        perPage: Number(data.per_page || data.perPage || list.length || 0),
+        page: Number(data.page || page),
+        endpoint: url
+      };
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  throw lastError || new Error(`Unable to fetch SteamGifts page ${page}`);
+}
 export async function collect() {
   const now = Math.floor(Date.now()/1000);
   const all = [];
@@ -136,7 +181,7 @@ export async function collect() {
     generatedAt: new Date().toISOString(),
     generatedAtUnix: now,
     source: `${SG_ORIGIN}/?format=json`,
-    pagesScanned: Math.min(MAX_PAGES, Math.ceil(all.length / Math.max(1, 100))),
+    pagesScanned: Math.min(MAX_PAGES, Math.max(1, Math.ceil(all.length / Math.max(1, 100)))),
     scanned: all.length,
     activeCount: active.length,
     giveaways: active.slice(0, 100),

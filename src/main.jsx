@@ -76,7 +76,7 @@ function App() {
     setLoading(true); setError("");
     try {
       const r = await fetch("/api/giveaways", { cache: "no-store" });
-      if (!r.ok) throw new Error("API request failed");
+      if (!r.ok) { const body = await r.json().catch(() => null); throw new Error(body?.message || body?.error || `API request failed (${r.status})`); }
       setData(await r.json());
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }

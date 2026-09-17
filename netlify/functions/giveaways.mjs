@@ -18,6 +18,6 @@ export default async () => {
     }
     return json(snapshot);
   } catch (error) {
-    return json({ error: "GiveFlpps backend unavailable", message: error.message }, 502);
+    return json({ error: "GiveFlpps backend unavailable", message: error.message, hint: "Open /api/health to diagnose the Netlify Function and SteamGifts connection." }, 502);
   }
 };
